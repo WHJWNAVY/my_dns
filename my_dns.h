@@ -36,6 +36,7 @@ extern "C" {
 #define MDNS_POINTER_DIFF(a, b) ((size_t)((const char *)(a) - (const char *)(b)))
 
 #define MDNS_PORT 53
+#define MDNS_MAX_TIMEOUS 10
 #define MDNS_MAX_SUBSTRINGS 64
 
 enum mdns_record_type {
@@ -387,19 +388,20 @@ static inline int mdns_socket_setup_ipv6(int sock, const struct sockaddr_in6 *sa
 
 static inline int mdns_socket_setup(int sock) {
     unsigned int reuseaddr = 1;
+    struct timeval so_timeout = {.tv_sec = MDNS_MAX_TIMEOUS, .tv_usec = 0};
 
-    setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, (const char *)&reuseaddr, sizeof(reuseaddr));
+    if (setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, (const char *)&reuseaddr, sizeof(reuseaddr)) != 0) {
+        return -1;
+    }
 #ifdef SO_REUSEPORT
-    setsockopt(sock, SOL_SOCKET, SO_REUSEPORT, (const char *)&reuseaddr, sizeof(reuseaddr));
+    if (setsockopt(sock, SOL_SOCKET, SO_REUSEPORT, (const char *)&reuseaddr, sizeof(reuseaddr)) != 0) {
+        return -1;
+    }
 #endif
 
-#ifdef _WIN32
-    unsigned long param = 1;
-    ioctlsocket(sock, FIONBIO, &param);
-#else
-    const int flags = fcntl(sock, F_GETFL, 0);
-    fcntl(sock, F_SETFL, flags | O_NONBLOCK);
-#endif
+    if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &so_timeout, sizeof(so_timeout)) != 0) {
+        return -1;
+    }
 
     return 0;
 }

@@ -439,91 +439,69 @@ static int open_client_sockets(int *sockets, int max_sockets, int port) {
 
 // Send a mDNS query
 static int send_mdns_query(mdns_query_t *query, size_t count) {
-    int sockets[32] = {0};
-    int query_id[32] = {0};
+    int query_id = 0;
     sockaddr_st servers[32] = {0};
     size_t capacity = 0;
     void *buffer = NULL;
     void *user_data = NULL;
-    size_t iq = 0, rec = 0;
-    int res = 0, nfds = 0, records = 0;
-    int isock = 0, iserv = 0;
-    struct timeval timeout = {0};
-    fd_set readfs = {0};
+    char *record_name = NULL;
+    int isock = 0, ret = 0, idx = 0;
 
     int num_servers = load_dns_servers(&servers, sizeof(servers) / sizeof(servers[0]), MDNS_PORT);
     if (num_servers <= 0) {
         printf("Failed to load DNS servers\n");
         return -1;
     }
-    printf("Loaded %d DNS server%s\n", num_servers, num_servers > 1 ? "s" : "");
 
-    int num_sockets = open_client_sockets(sockets, sizeof(sockets) / sizeof(sockets[0]), 0);
-    if (num_sockets <= 0) {
+    isock = mdns_socket_open();
+    if (isock < 0) {
         printf("Failed to open any client sockets\n");
         return -1;
     }
-    printf("Opened %d socket%s for mDNS query\n", num_sockets, num_sockets > 1 ? "s" : "");
+
+#ifdef _WIN32
+    query_id = GetCurrentProcessId();
+#else
+    query_id = getpid();
+#endif
 
     capacity = 2048;
     buffer = malloc(capacity);
     user_data = 0;
 
     printf("Sending mDNS query");
-    for (iq = 0; iq < count; ++iq) {
-        const char *record_name = "PTR";
-        if (query[iq].type == MDNS_RECORDTYPE_SRV)
+    for (idx = 0; idx < count; ++idx) {
+        record_name = "PTR";
+        if (query[idx].type == MDNS_RECORDTYPE_SRV)
             record_name = "SRV";
-        else if (query[iq].type == MDNS_RECORDTYPE_A)
+        else if (query[idx].type == MDNS_RECORDTYPE_A)
             record_name = "A";
-        else if (query[iq].type == MDNS_RECORDTYPE_AAAA)
+        else if (query[idx].type == MDNS_RECORDTYPE_AAAA)
             record_name = "AAAA";
         else
-            query[iq].type = MDNS_RECORDTYPE_PTR;
-        printf(" : %s %s", query[iq].name, record_name);
+            query[idx].type = MDNS_RECORDTYPE_PTR;
+        printf(" : %s %s", query[idx].name, record_name);
     }
     printf("\n");
-    for (isock = 0; isock < num_sockets; ++isock) {
-        query_id[isock] = mdns_multiquery_send(sockets[isock], &(servers[0].saddr), servers[0].addrlen, query, count,
-                                               buffer, capacity, 0);
-        if (query_id[isock] < 0)
+    for (idx = 0; idx < num_servers; idx++) {
+        ret = mdns_multiquery_send(isock, &(servers[idx].saddr), servers[idx].addrlen, query, count, buffer, capacity,
+                                   query_id);
+        if (query_id != ret) {
             printf("Failed to send mDNS query: %s\n", strerror(errno));
+            continue;
+        }
+        printf("Reading mDNS query replies\n");
+        ret = mdns_query_recv(isock, buffer, capacity, mdns_query_callback, user_data, query_id);
+        if (ret < 0) {
+            printf("Failed to read mDNS query reply: %s\n", strerror(errno));
+            continue;
+        }
+        printf("Read %d records\n", ret);
+        break;
     }
 
-    // This is a simple implementation that loops for 5 seconds or as long as we get replies
-    printf("Reading mDNS query replies\n");
-    do {
-        timeout.tv_sec = 10;
-        timeout.tv_usec = 0;
-        FD_ZERO(&readfs);
-        for (isock = 0; isock < num_sockets; ++isock) {
-            if (sockets[isock] >= nfds)
-                nfds = sockets[isock] + 1;
-            FD_SET(sockets[isock], &readfs);
-        }
-
-        res = select(nfds, &readfs, 0, 0, &timeout);
-        if (res > 0) {
-            for (isock = 0; isock < num_sockets; ++isock) {
-                if (FD_ISSET(sockets[isock], &readfs)) {
-                    rec = mdns_query_recv(sockets[isock], buffer, capacity, mdns_query_callback, user_data,
-                                          query_id[isock]);
-                    if (rec > 0)
-                        records += rec;
-                }
-                FD_SET(sockets[isock], &readfs);
-            }
-        }
-    } while (res > 0);
-
-    printf("Read %d records\n", records);
-
     free(buffer);
-
-    for (isock = 0; isock < num_sockets; ++isock)
-        mdns_socket_close(sockets[isock]);
-    printf("Closed socket%s\n", num_sockets > 1 ? "s" : "");
-
+    mdns_socket_close(isock);
     return 0;
 }
 
