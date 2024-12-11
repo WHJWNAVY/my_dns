@@ -224,6 +224,9 @@ void print_usage(const char *exe) {
     PRINT_LOGN("\t-s, --server <server>\t\tDNS server address");
     PRINT_LOGN("\t-4, --inet4\t\t\tQuery use IPv4");
     PRINT_LOGN("\t-6, --inet6\t\t\tQuery use IPv6");
+    PRINT_LOGN("Example:");
+    PRINT_LOGN("\t%s baidu.com", exe);
+    PRINT_LOGN("\t%s -4 -t A baidu.com", exe);
 }
 
 int main(int argc, const char *const *argv) {
@@ -257,6 +260,7 @@ int main(int argc, const char *const *argv) {
                 }
                 if (strcmp("help", long_options[opt_index].name) == 0) {
                     help = true;
+                    goto end;
                 }
                 break;
             case 't':
@@ -273,7 +277,7 @@ int main(int argc, const char *const *argv) {
                 break;
             case 'h':
                 help = true;
-                break;
+                goto end;
             default:
                 PRINT_LOG("Unknown option -- %c\n", opt);
                 help = true;
