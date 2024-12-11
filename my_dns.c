@@ -202,15 +202,48 @@ typedef struct {
     size_t addrlen;
 } sockaddr_st;
 
+static int load_dns_servers_from_string(sockaddr_st *addr, int port, const char *src) {
+    struct sockaddr_in *in = NULL;
+    struct sockaddr_in6 *in6 = NULL;
+    size_t *slen = NULL;
+
+    if ((addr == NULL) || (src == NULL)) {
+        return -1;
+    }
+
+    in = (struct sockaddr_in *)&(addr->saddr);
+    in6 = (struct sockaddr_in6 *)&(addr->saddr);
+    slen = &(addr->addrlen);
+
+    if (ipv4_address_from_string(in, src) != NULL) {
+        in->sin_family = AF_INET;
+        in->sin_port = htons((unsigned short)port);
+        *slen = sizeof(struct sockaddr_in);
+        MY_DEBUG("Load dns server: %s", src);
+        return 0;
+    } else if (ipv6_address_from_string(in6, src) != NULL) {
+        in6->sin6_family = AF_INET6;
+        in6->sin6_port = htons((unsigned short)port);
+        *slen = sizeof(struct sockaddr_in6);
+        MY_DEBUG("Load dns6 server: %s", src);
+        return 0;
+    } else {
+        MY_ERROR("Invalid dns server: %s", src);
+        return -1;
+    }
+}
+
+#if 0
 /* The function obtains the DNS servers stored in /etc/resolv.conf */
 static int load_dns_servers(sockaddr_st *addrs, int max_addrs, int port) {
     FILE *rfile = NULL;
     char rline[256] = {0};
-    struct sockaddr_in *in = NULL;
-    struct sockaddr_in6 *in6 = NULL;
-    size_t *slen = NULL;
     char *str = NULL;
     int n = 0;
+
+    if ((addrs == NULL) || (max_addrs <= 0)) {
+        return 0;
+    }
 
     if ((rfile = fopen("/etc/resolv.conf", "rt")) == NULL) {
         return 0;
@@ -221,20 +254,7 @@ static int load_dns_servers(sockaddr_st *addrs, int max_addrs, int port) {
             str = strtok(rline, " ");
             str = strtok(NULL, "\n");
             if ((str != NULL) && (n < max_addrs)) {
-                in = (struct sockaddr_in *)&(addrs[n].saddr);
-                in6 = (struct sockaddr_in6 *)&(addrs[n].saddr);
-                slen = &(addrs[n].addrlen);
-                if (ipv4_address_from_string(in, str) != NULL) {
-                    in->sin_family = AF_INET;
-                    in->sin_port = htons((unsigned short)port);
-                    *slen = sizeof(struct sockaddr_in);
-                    printf("Load dns server: %s\n", str);
-                    n++;
-                } else if (ipv6_address_from_string(&(addrs[n].saddr), str) != NULL) {
-                    in6->sin6_family = AF_INET6;
-                    in6->sin6_port = htons((unsigned short)port);
-                    *slen = sizeof(struct sockaddr_in6);
-                    printf("Load dns6 server: %s\n", str);
+                if (load_dns_servers_from_string(&addrs[n], port, str) == 0) {
                     n++;
                 }
             }
@@ -245,217 +265,31 @@ static int load_dns_servers(sockaddr_st *addrs, int max_addrs, int port) {
 
     return n;
 }
-
-// Open sockets for sending one-shot multicast queries from an ephemeral port
-static int open_client_sockets(int *sockets, int max_sockets, int port) {
-    // When sending, each socket can only send to one network interface
-    // Thus we need to open one socket for each interface and address family
-    int num_sockets = 0;
-
-#ifdef _WIN32
-    IP_ADAPTER_ADDRESSES *adapter_address = 0;
-    ULONG address_size = 8000;
-    unsigned int ret;
-    unsigned int num_retries = 4;
-    do {
-        adapter_address = (IP_ADAPTER_ADDRESSES *)malloc(address_size);
-        ret = GetAdaptersAddresses(AF_UNSPEC, GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_ANYCAST, 0, adapter_address,
-                                   &address_size);
-        if (ret == ERROR_BUFFER_OVERFLOW) {
-            free(adapter_address);
-            adapter_address = 0;
-            address_size *= 2;
-        } else {
-            break;
-        }
-    } while (num_retries-- > 0);
-
-    if (!adapter_address || (ret != NO_ERROR)) {
-        free(adapter_address);
-        printf("Failed to get network adapter addresses\n");
-        return num_sockets;
-    }
-
-    int first_ipv4 = 1;
-    int first_ipv6 = 1;
-    for (PIP_ADAPTER_ADDRESSES adapter = adapter_address; adapter; adapter = adapter->Next) {
-        if (adapter->TunnelType == TUNNEL_TYPE_TEREDO)
-            continue;
-        if (adapter->OperStatus != IfOperStatusUp)
-            continue;
-
-        for (IP_ADAPTER_UNICAST_ADDRESS *unicast = adapter->FirstUnicastAddress; unicast; unicast = unicast->Next) {
-            if (unicast->Address.lpSockaddr->sa_family == AF_INET) {
-                struct sockaddr_in *saddr = (struct sockaddr_in *)unicast->Address.lpSockaddr;
-                if ((saddr->sin_addr.S_un.S_un_b.s_b1 != 127) || (saddr->sin_addr.S_un.S_un_b.s_b2 != 0) ||
-                    (saddr->sin_addr.S_un.S_un_b.s_b3 != 0) || (saddr->sin_addr.S_un.S_un_b.s_b4 != 1)) {
-                    int log_addr = 0;
-                    if (first_ipv4) {
-                        service_address_ipv4 = *saddr;
-                        first_ipv4 = 0;
-                        log_addr = 1;
-                    }
-                    has_ipv4 = 1;
-                    if (num_sockets < max_sockets) {
-                        saddr->sin_port = htons((unsigned short)port);
-                        int sock = mdns_socket_open_ipv4(saddr);
-                        if (sock >= 0) {
-                            sockets[num_sockets++] = sock;
-                            log_addr = 1;
-                        } else {
-                            log_addr = 0;
-                        }
-                    }
-                    if (log_addr) {
-                        char buffer[128];
-                        mdns_string_t addr =
-                            ipv4_address_to_string(buffer, sizeof(buffer), saddr, sizeof(struct sockaddr_in));
-                        printf("Local IPv4 address: %.*s\n", MDNS_STRING_FORMAT(addr));
-                    }
-                }
-            } else if (unicast->Address.lpSockaddr->sa_family == AF_INET6) {
-                struct sockaddr_in6 *saddr = (struct sockaddr_in6 *)unicast->Address.lpSockaddr;
-                // Ignore link-local addresses
-                if (saddr->sin6_scope_id)
-                    continue;
-                static const unsigned char localhost[] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
-                static const unsigned char localhost_mapped[] = {0, 0, 0,    0,    0,    0, 0, 0,
-                                                                 0, 0, 0xff, 0xff, 0x7f, 0, 0, 1};
-                if ((unicast->DadState == NldsPreferred) && memcmp(saddr->sin6_addr.s6_addr, localhost, 16) &&
-                    memcmp(saddr->sin6_addr.s6_addr, localhost_mapped, 16)) {
-                    int log_addr = 0;
-                    if (first_ipv6) {
-                        service_address_ipv6 = *saddr;
-                        first_ipv6 = 0;
-                        log_addr = 1;
-                    }
-                    has_ipv6 = 1;
-                    if (num_sockets < max_sockets) {
-                        saddr->sin6_port = htons((unsigned short)port);
-                        int sock = mdns_socket_open_ipv6(saddr);
-                        if (sock >= 0) {
-                            sockets[num_sockets++] = sock;
-                            log_addr = 1;
-                        } else {
-                            log_addr = 0;
-                        }
-                    }
-                    if (log_addr) {
-                        char buffer[128];
-                        mdns_string_t addr =
-                            ipv6_address_to_string(buffer, sizeof(buffer), saddr, sizeof(struct sockaddr_in6));
-                        printf("Local IPv6 address: %.*s\n", MDNS_STRING_FORMAT(addr));
-                    }
-                }
-            }
-        }
-    }
-
-    free(adapter_address);
-#else
-    struct ifaddrs *ifaddr = 0;
-    struct ifaddrs *ifa = 0;
-
-    if (getifaddrs(&ifaddr) < 0)
-        printf("Unable to get interface addresses\n");
-
-    int first_ipv4 = 1;
-    int first_ipv6 = 1;
-    for (ifa = ifaddr; ifa; ifa = ifa->ifa_next) {
-        if (!ifa->ifa_addr)
-            continue;
-        if (!(ifa->ifa_flags & IFF_UP) || !(ifa->ifa_flags & IFF_MULTICAST))
-            continue;
-        if ((ifa->ifa_flags & IFF_LOOPBACK) || (ifa->ifa_flags & IFF_POINTOPOINT))
-            continue;
-
-        if (ifa->ifa_addr->sa_family == AF_INET) {
-            struct sockaddr_in *saddr = (struct sockaddr_in *)ifa->ifa_addr;
-            if (saddr->sin_addr.s_addr != htonl(INADDR_LOOPBACK)) {
-                int log_addr = 0;
-                if (first_ipv4) {
-                    service_address_ipv4 = *saddr;
-                    first_ipv4 = 0;
-                    log_addr = 1;
-                }
-                has_ipv4 = 1;
-                if (num_sockets < max_sockets) {
-                    saddr->sin_port = htons(port);
-                    int sock = mdns_socket_open_ipv4(saddr);
-                    if (sock >= 0) {
-                        sockets[num_sockets++] = sock;
-                        log_addr = 1;
-                    } else {
-                        log_addr = 0;
-                    }
-                }
-                if (log_addr) {
-                    char buffer[128];
-                    mdns_string_t addr =
-                        ipv4_address_to_string(buffer, sizeof(buffer), saddr, sizeof(struct sockaddr_in));
-                    printf("Local IPv4 address: %.*s\n", MDNS_STRING_FORMAT(addr));
-                }
-            }
-        } else if (ifa->ifa_addr->sa_family == AF_INET6) {
-            struct sockaddr_in6 *saddr = (struct sockaddr_in6 *)ifa->ifa_addr;
-            // Ignore link-local addresses
-            if (saddr->sin6_scope_id)
-                continue;
-            static const unsigned char localhost[] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
-            static const unsigned char localhost_mapped[] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 0x7f, 0, 0, 1};
-            if (memcmp(saddr->sin6_addr.s6_addr, localhost, 16) &&
-                memcmp(saddr->sin6_addr.s6_addr, localhost_mapped, 16)) {
-                int log_addr = 0;
-                if (first_ipv6) {
-                    service_address_ipv6 = *saddr;
-                    first_ipv6 = 0;
-                    log_addr = 1;
-                }
-                has_ipv6 = 1;
-                if (num_sockets < max_sockets) {
-                    saddr->sin6_port = htons(port);
-                    int sock = mdns_socket_open_ipv6(saddr);
-                    if (sock >= 0) {
-                        sockets[num_sockets++] = sock;
-                        log_addr = 1;
-                    } else {
-                        log_addr = 0;
-                    }
-                }
-                if (log_addr) {
-                    char buffer[128];
-                    mdns_string_t addr =
-                        ipv6_address_to_string(buffer, sizeof(buffer), saddr, sizeof(struct sockaddr_in6));
-                    printf("Local IPv6 address: %.*s\n", MDNS_STRING_FORMAT(addr));
-                }
-            }
-        }
-    }
-
-    freeifaddrs(ifaddr);
 #endif
-    return num_sockets;
-}
 
-// Send a mDNS query
-static int send_mdns_query(mdns_query_t *query, size_t count) {
+// Send a DNS query
+static int send_mdns_query(char *record_name, char *query_name, char *query_server, bool inet6) {
     int query_id = 0;
     sockaddr_st servers[32] = {0};
+    int nservers = 0;
     size_t capacity = 0;
     void *buffer = NULL;
     void *user_data = NULL;
-    char *record_name = NULL;
+    int query_type = 0;
     int isock = 0, ret = 0, idx = 0;
 
-    int num_servers = load_dns_servers(&servers, sizeof(servers) / sizeof(servers[0]), MDNS_PORT);
-    if (num_servers <= 0) {
-        printf("Failed to load DNS servers\n");
+    if ((record_name == NULL) || (query_name == NULL) || (query_server == NULL)) {
         return -1;
     }
 
-    isock = mdns_socket_open();
+    if (load_dns_servers_from_string(&(servers[nservers++]), MDNS_PORT, query_server) != 0) {
+        MY_ERROR("Invalid DNS server: %s", query_server);
+        return -1;
+    }
+
+    isock = mdns_socket_open(inet6);
     if (isock < 0) {
-        printf("Failed to open any client sockets\n");
+        MY_ERROR("Failed to open any client sockets!");
         return -1;
     }
 
@@ -469,35 +303,31 @@ static int send_mdns_query(mdns_query_t *query, size_t count) {
     buffer = malloc(capacity);
     user_data = 0;
 
-    printf("Sending mDNS query");
-    for (idx = 0; idx < count; ++idx) {
-        record_name = "PTR";
-        if (query[idx].type == MDNS_RECORDTYPE_SRV)
-            record_name = "SRV";
-        else if (query[idx].type == MDNS_RECORDTYPE_A)
-            record_name = "A";
-        else if (query[idx].type == MDNS_RECORDTYPE_AAAA)
-            record_name = "AAAA";
-        else
-            query[idx].type = MDNS_RECORDTYPE_PTR;
-        printf(" : %s %s", query[idx].name, record_name);
+    if (strcmp(record_name, "SRV") == 0) {
+        query_type = MDNS_RECORDTYPE_SRV;
+    } else if (strcmp(record_name, "A") == 0) {
+        query_type = MDNS_RECORDTYPE_A;
+    } else if (strcmp(record_name, "AAAA") == 0) {
+        query_type = MDNS_RECORDTYPE_AAAA;
+    } else {
+        query_type = MDNS_RECORDTYPE_PTR;
     }
-    printf("\n");
-    for (idx = 0; idx < num_servers; idx++) {
-        ret = mdns_multiquery_send(isock, &(servers[idx].saddr), servers[idx].addrlen, query, count, buffer, capacity,
-                                   query_id);
+    MY_DEBUG("Sending DNS query : [%s] [%s]", query_name, record_name);
+    for (idx = 0; idx < nservers; idx++) {
+        ret = mdns_query_send(isock, &(servers[idx].saddr), servers[idx].addrlen, query_type, query_name, buffer,
+                              capacity, query_id);
         if (query_id != ret) {
-            printf("Failed to send mDNS query: %s\n", strerror(errno));
+            MY_DEBUG("Failed to send DNS query!");
             continue;
         }
-        printf("Reading mDNS query replies\n");
+        MY_DEBUG("Reading DNS query replies.");
         ret = mdns_query_recv(isock, buffer, capacity, mdns_query_callback, user_data, query_id);
         if (ret < 0) {
-            printf("Failed to read mDNS query reply: %s\n", strerror(errno));
+            MY_DEBUG("Failed to read DNS query reply!");
             continue;
         }
-        printf("Read %d records\n", ret);
-        break;
+        MY_DEBUG("Read %d records", ret);
+        // break;
     }
 
     free(buffer);
@@ -505,68 +335,118 @@ static int send_mdns_query(mdns_query_t *query, size_t count) {
     return 0;
 }
 
-void usage(const char *exe) {
-    fprintf(stderr, "Usage: %s --query [TYPE] <HOST> ...\n", exe);
-    fprintf(stderr, "Query types:\n");
-    fprintf(stderr, "\tPTR\t- Service name\n");
-    fprintf(stderr, "\tSRV\t- Service instance\n");
-    fprintf(stderr, "\tA\t- IPv4 address\n");
-    fprintf(stderr, "\tAAAA\t- IPv6 address\n");
+#define PRINT_LOG(FMT, ...) fprintf(stderr, FMT, ##__VA_ARGS__)
+#define PRINT_LOGN(FMT, ...) fprintf(stderr, FMT "\n", ##__VA_ARGS__)
+void print_usage(const char *exe) {
+    PRINT_LOGN("Usage: %s [OPTION] <HOST> ...", exe);
+    PRINT_LOGN("Options:");
+    PRINT_LOGN("\t-h, --help\t\t\tShow this help");
+    PRINT_LOGN("\t-t, --type <type>\t\tQuery type (PTR, SRV, A, AAAA)");
+    PRINT_LOGN("\t-s, --server <server>\t\tDNS server address");
+    PRINT_LOGN("\t-4, --ipv4\t\t\tQuery use IPv4");
+    PRINT_LOGN("\t-6, --ipv6\t\t\tQuery use IPv6");
 }
 
 int main(int argc, const char *const *argv) {
     int ret = 0;
-    mdns_query_t query[16] = {0};
-    size_t query_count = 0;
+    char *query_type = "A";
+    char *query_name = NULL;
+    char *query_server = NULL;
+    bool ipv6 = false;
+    bool help = false;
 
-#ifdef _WIN32
-    WORD versionWanted = MAKEWORD(1, 1);
-    WSADATA wsaData;
-    if (WSAStartup(versionWanted, &wsaData)) {
-        printf("Failed to initialize WinSock\n");
-        return -1;
-    }
-#endif
+    int opt = 0, opt_index = 0;
 
-    for (int iarg = 0; iarg < argc; ++iarg) {
-        if (strcmp(argv[iarg], "--query") == 0) {
-            // Each query is either a service name, or a pair of record type and a service name
-            ++iarg;
-            while ((iarg < argc) && (query_count < 16)) {
-                query[query_count].name = argv[iarg++];
-                query[query_count].type = MDNS_RECORDTYPE_PTR;
-                if (iarg < argc) {
-                    mdns_record_type_t record_type = 0;
-                    if (strcmp(query[query_count].name, "PTR") == 0)
-                        record_type = MDNS_RECORDTYPE_PTR;
-                    else if (strcmp(query[query_count].name, "SRV") == 0)
-                        record_type = MDNS_RECORDTYPE_SRV;
-                    else if (strcmp(query[query_count].name, "A") == 0)
-                        record_type = MDNS_RECORDTYPE_A;
-                    else if (strcmp(query[query_count].name, "AAAA") == 0)
-                        record_type = MDNS_RECORDTYPE_AAAA;
-                    if (record_type != 0) {
-                        query[query_count].type = record_type;
-                        query[query_count].name = argv[iarg++];
-                    }
+    static struct option long_options[] = {{"help", no_argument, 0, 'h'},         {"type", required_argument, 0, 't'},
+                                           {"server", required_argument, 0, 's'}, {"ipv4", no_argument, 0, '4'},
+                                           {"ipv6", no_argument, 0, '6'},         {0, 0, 0, 0}};
+
+    while ((opt = getopt_long(argc, argv, "t:s:46h", long_options, &opt_index)) != -1) {
+        switch (opt) {
+            case 0:
+                if (strcmp("type", long_options[opt_index].name) == 0) {
+                    query_type = optarg;
                 }
-                query[query_count].length = strlen(query[query_count].name);
-                ++query_count;
-            }
+                if (strcmp("server", long_options[opt_index].name) == 0) {
+                    query_server = optarg;
+                }
+                if (strcmp("ipv4", long_options[opt_index].name) == 0) {
+                    ipv6 = false;
+                }
+                if (strcmp("ipv6", long_options[opt_index].name) == 0) {
+                    ipv6 = true;
+                }
+                if (strcmp("help", long_options[opt_index].name) == 0) {
+                    help = true;
+                }
+                break;
+            case 't':
+                query_type = optarg;
+                break;
+            case 's':
+                query_server = optarg;
+                break;
+            case '4':
+                ipv6 = false;
+                break;
+            case '6':
+                ipv6 = true;
+                break;
+            case 'h':
+                help = true;
+                break;
+            default:
+                PRINT_LOG("Unknown option -- %c\n", opt);
+                help = true;
+                goto end;
         }
     }
 
-    if (query_count <= 0) {
-        usage(argv[0]);
-        goto err;
+    // MY_DEBUG("optind: %d:%d", optind, argc);
+    if (optind >= argc) {
+        PRINT_LOGN("No hostname specified!");
+        help = true;
+        goto end;
+    }
+    query_name = argv[optind];
+    if (query_name == NULL) {
+        PRINT_LOGN("Invalid hostname!");
+        help = true;
+        goto end;
     }
 
-    ret = send_mdns_query(query, query_count);
+    if (query_server == NULL) {
+        if (ipv6) {
+            query_server = "240c::6666";
+        } else {
+            query_server = "223.5.5.5";
+        }
+    }
 
-err:
+    MY_DEBUG("Query name: %s", query_name);
+    MY_DEBUG("Query type: %s", query_type);
+    MY_DEBUG("Query server: %s", query_server);
+    MY_DEBUG("IPv6: %d", ipv6);
+
+#ifdef _WIN32
+    WORD versionWanted = MAKEWORD(1, 1);
+    WSADATA wsaData = {0};
+    if (WSAStartup(versionWanted, &wsaData)) {
+        MY_ERROR("Failed to initialize WinSock!");
+        ret = -1;
+        goto end;
+    }
+#endif
+
+    ret = send_mdns_query(query_type, query_name, query_server, ipv6);
+
 #ifdef _WIN32
     WSACleanup();
 #endif
 
+end:
+    if (help) {
+        print_usage(argv[0]);
+    }
     return ret;
 }

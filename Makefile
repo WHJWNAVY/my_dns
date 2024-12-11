@@ -1,9 +1,9 @@
 ifeq ($(OS), Windows_NT)
-	CFLAGS:=-Os -DNDEBUG -ffunction-sections -fdata-sections -Wno-incompatible-pointer-types
+	CFLAGS:=-Os -DNDEBUG -ffunction-sections -fdata-sections -Wno-incompatible-pointer-types -DDEBUG_LEVEL=1
 	LDFLAGS:=-lkernel32 -luser32 -liphlpapi -lws2_32 -Wl,--gc-sections
 	TARGET=my_dns.exe
 else
-	CFLAGS:=-Os -DNDEBUG -ffunction-sections -fdata-sections
+	CFLAGS:=-Os -DNDEBUG -ffunction-sections -fdata-sections -DDEBUG_LEVEL=1
 	TARGET=my_dns
 endif
 
@@ -26,9 +26,9 @@ clean:
 
 run: $(TARGET)
 ifeq ($(OS), Windows_NT)
-	.\$(TARGET) --query A baidu.com
+	.\$(TARGET) -4 -t A baidu.com
 else
-	./$(TARGET) --query A baidu.com
+	./$(TARGET) -4 -t A baidu.com
 endif
 
 .PHONY: all clean
