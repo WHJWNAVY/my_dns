@@ -137,73 +137,35 @@ struct mdns_query_t {
     size_t length;
 };
 
-// mDNS/DNS-SD public API
-
-// ! Open a socket for sending and receiving DNS packets. Returns a valid socket on success, or -1 on error.
+// DNS public API
 static inline int mdns_socket_open(bool inet6);
-
-// ! Setup a socket for sending and receiving DNS packets. Returns 0 on success, or <0 on error.
 static inline int mdns_socket_setup(int sock, bool inet6);
-
-//! Close a socket opened with mdns_socket_open.
 static inline void mdns_socket_close(int sock);
 
-//! Send a multicast mDNS query on the given socket for the given service name. The supplied buffer
-//! will be used to build the query packet and must be 32 bit aligned. The query ID can be set to
-//! non-zero to filter responses, however the RFC states that the query ID SHOULD be set to 0 for
-//! multicast queries. The query will request a unicast response if the socket is bound to an
-//! ephemeral port, or a multicast response if the socket is bound to mDNS port 5353. Returns the
-//! used query ID, or <0 if error.
 static inline int mdns_query_send(int sock, const void *saddr, size_t saddrlen, mdns_record_type_t type,
                                   const char *name, uint16_t query_id, void *buffer, size_t capacity);
-
-//! Send a multicast mDNS query on the given socket for the given service names. The supplied buffer
-//! will be used to build the query packet and must be 32 bit aligned. The query ID can be set to
-//! non-zero to filter responses, however the RFC states that the query ID SHOULD be set to 0 for
-//! multicast queries. Each additional service name query consists of a triplet - a record type
-//! (mdns_record_type_t), a name string pointer (const char*) and a name length (size_t). The list
-//! of variable arguments should be terminated with a record type of 0. The query will request a
-//! unicast response if the socket is bound to an ephemeral port, or a multicast response if the
-//! socket is bound to mDNS port 5353. Returns the used query ID, or <0 if error.
 static inline int mdns_multiquery_send(int sock, const void *saddr, size_t saddrlen, const mdns_query_t *query,
                                        size_t count, uint16_t query_id, void *buffer, size_t capacity);
-
-//! Receive unicast responses to a mDNS query sent with mdns_[multi]query_send, optionally filtering
-//! out any responses not matching the given query ID. Set the query ID to 0 to parse all responses,
-//! even if it is not matching the query ID set in a specific query. Any data will be piped to the
-//! given callback for parsing. Buffer must be 32 bit aligned. Parsing is stopped when callback
-//! function returns non-zero. Returns the number of responses parsed.
 static inline size_t mdns_query_recv(int sock, void *buffer, size_t capacity, mdns_record_type_t query_type,
                                      int only_query_id, mdns_record_t **result, size_t *count);
 
 // Parse records functions
-
 //! Parse an A record, returns the IPv4 address in the record
 static inline struct sockaddr_in *mdns_record_parse_a(const void *buffer, size_t size, size_t offset, size_t length,
                                                       struct sockaddr_in *addr);
-
 //! Parse an AAAA record, returns the IPv6 address in the record
 static inline struct sockaddr_in6 *mdns_record_parse_aaaa(const void *buffer, size_t size, size_t offset, size_t length,
                                                           struct sockaddr_in6 *addr);
 
 // Internal functions
-
 static inline mdns_string_t mdns_string_extract(const void *buffer, size_t size, size_t *offset, char *str,
                                                 size_t capacity);
-
 static inline int mdns_string_skip(const void *buffer, size_t size, size_t *offset);
-
 static inline size_t mdns_string_find(const char *str, size_t length, char c, size_t offset);
-
-//! Compare if two strings are equal. If the strings are equal it returns >0 and the offset
-//! variables are updated to the end of the corresponding strings. If the strings are not equal it
-//! returns 0 and the offset variables are NOT updated.
 static inline int mdns_string_equal(const void *buffer_lhs, size_t size_lhs, size_t *ofs_lhs, const void *buffer_rhs,
                                     size_t size_rhs, size_t *ofs_rhs);
-
 static inline void *mdns_string_make(void *buffer, size_t capacity, void *data, const char *name, size_t length,
                                      mdns_string_table_t *string_table);
-
 static inline size_t mdns_string_table_find(mdns_string_table_t *string_table, const void *buffer, size_t capacity,
                                             const char *str, size_t first_length, size_t total_length);
 

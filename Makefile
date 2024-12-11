@@ -1,9 +1,9 @@
 ifeq ($(OS), Windows_NT)
-	CFLAGS:=-Os -DNDEBUG -ffunction-sections -fdata-sections -Wno-incompatible-pointer-types -DDEBUG_LEVEL=1
+	CFLAGS:=-Os -DNDEBUG -ffunction-sections -fdata-sections -Wno-incompatible-pointer-types -DDEBUG_LEVEL=0
 	LDFLAGS:=-lkernel32 -luser32 -liphlpapi -lws2_32 -Wl,--gc-sections
 	TARGET=my_dns.exe
 else
-	CFLAGS:=-Os -DNDEBUG -ffunction-sections -fdata-sections -DDEBUG_LEVEL=1
+	CFLAGS:=-Os -DNDEBUG -ffunction-sections -fdata-sections -DDEBUG_LEVEL=0
 	TARGET=my_dns
 endif
 
